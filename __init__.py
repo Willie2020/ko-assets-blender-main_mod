@@ -1,3 +1,158 @@
+bl_info = {
+    "name": "Knight Online Character Importer",
+    "author": "Your Name",
+    "version": (1, 0, 0), # Add minor version
+    "blender": (4, 2, 0),
+    "location": "File > Import > Knight Online Character (.n3chr)",
+    "description": "Import Knight Online Character (.n3chr) files",
+    "warning": "",
+    "doc_url": "",
+    "category": "Import-Export",
+}
+
+import bpy
+import os
+import sys
+import subprocess
+from bpy.types import Operator, Panel, AddonPreferences
+from bpy.props import StringProperty, BoolProperty
+from bpy_extras.io_utils import ImportHelper
+from bpy.types import Operator
+import sys
+import os
+
+class KnightOnlinePreferences(AddonPreferences):
+    bl_idname = __package__
+
+    def draw(self, context):
+        layout = self.layout
+        
+        # Check if dependencies are installed correctly
+        try:
+            # Try importing from packages directory first
+            addon_dir = os.path.dirname(os.path.realpath(__file__))
+            packages_dir = os.path.join(addon_dir, "packages")
+            if packages_dir not in sys.path:
+                sys.path.append(packages_dir)
+            
+            from PIL import Image  # Try direct import first
+            pil_installed = True
+        except ImportError:
+            pil_installed = False
+            
+        try:
+            import cv2  # Try direct import first
+            opencv_installed = True
+        except ImportError:
+            opencv_installed = False
+
+        # PIL installation section
+        box = layout.box()
+        row = box.row()
+        if not pil_installed:
+            row.operator(InstallDependenciesOperator.bl_idname, text="Install PIL").package = "Pillow"
+            row.label(text="PIL: Not Installed", icon='ERROR')
+        else:
+            row.label(text="PIL: Installed", icon='CHECKMARK')
+
+        # OpenCV installation section    
+        box = layout.box()
+        row = box.row()
+        if not opencv_installed:
+            row.operator(InstallDependenciesOperator.bl_idname, text="Install OpenCV").package = "opencv-python"
+            row.label(text="OpenCV: Not Installed", icon='ERROR')
+        else:
+            row.label(text="OpenCV: Installed", icon='CHECKMARK')
+
+# Add packages directory to Python path
+addon_dir = os.path.dirname(os.path.realpath(__file__))
+if (addon_dir not in sys.path):
+    sys.path.append(addon_dir)
+
+class InstallDependenciesOperator(Operator):
+    """Install required dependencies"""
+    bl_idname = "wm.install_ko_dependencies"
+    bl_label = "Install Dependencies"
+    
+    package: StringProperty()
+    
+    def execute(self, context):
+        addon_dir = os.path.dirname(os.path.realpath(__file__))
+        packages_dir = os.path.join(addon_dir, "packages")
+        os.makedirs(packages_dir, exist_ok=True)
+        
+        python_exe = sys.executable
+        
+        try:
+            # First ensure pip is available
+            subprocess.check_call([
+                python_exe, 
+                "-m", "ensurepip"
+            ])
+            
+            # Install the package
+            subprocess.check_call([
+                python_exe,
+                "-m", "pip",
+                "install",
+                "--target", packages_dir,
+                self.package,
+                "--no-deps"  # Avoid dependency conflicts
+            ])
+            
+            # Force reload sys.modules to recognize new packages
+            import importlib
+            importlib.invalidate_caches()
+            
+            # Add packages dir to path if not already there
+            if packages_dir not in sys.path:
+                sys.path.append(packages_dir)
+            
+            self.report({'INFO'}, f"Successfully installed {self.package}")
+            return {'FINISHED'}
+            
+        except subprocess.CalledProcessError as e:
+            self.report({'ERROR'}, f"Failed to install {self.package}: {str(e)}")
+            return {'CANCELLED'}
+
+class DependenciesPanel(Panel):
+    """Dependencies installer panel"""
+    bl_label = "KO Character Dependencies"
+    bl_idname = "VIEW3D_PT_ko_dependencies"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'KO Import'
+    
+    def draw(self, context):
+        layout = self.layout
+        
+        # Check if dependencies are installed
+        try:
+            from packages import PIL
+            pil_installed = True
+        except ImportError:
+            pil_installed = False
+            
+        try:
+            from packages import cv2
+            opencv_installed = True
+        except ImportError:
+            opencv_installed = False
+        
+        # PIL installation button
+        row = layout.row()
+        if not pil_installed:
+            row.operator(InstallDependenciesOperator.bl_idname, text="Install PIL").package = "Pillow"
+        else:
+            row.label(text="PIL: Installed ✓")
+            
+        # OpenCV installation button    
+        row = layout.row()
+        if not opencv_installed:
+            row.operator(InstallDependenciesOperator.bl_idname, text="Install OpenCV").package = "opencv-python"
+        else:
+            row.label(text="OpenCV: Installed ✓")
+
 import ctypes
 from pathlib import Path
 from enum import Enum
@@ -18,15 +173,35 @@ from bpy.types import Operator
 import mathutils
 from math import radians
 
-# Must run as admin
-try:
-    from PIL import Image
-except ImportError:
-    ensurepip.bootstrap()
-    os.environ.pop("PIP_REQ_TRACKER", None)
+# Remove the immediate dependency check and make it conditional
+def check_dependencies():
+    try:
+        from PIL import Image
+        USE_PIL = True
+    except ImportError:
+        USE_PIL = False
     
-    pip.main(["install", "pillow"])
-    from PIL import Image
+    try:
+        import cv2
+        USE_OPENCV = True
+    except ImportError:
+        USE_OPENCV = False
+    
+    return USE_PIL or USE_OPENCV
+
+def load_texture(buffer, width, height):
+    try:
+        from packages.PIL import Image
+        return Image.frombuffer('RGBA', (width, height), buffer, 'raw', 'RGBA', 0, 1)
+    except ImportError:
+        try:
+            from packages import cv2
+            import numpy as np
+            img_array = np.frombuffer(buffer, dtype=np.uint8)
+            img_array = img_array.reshape((height, width, 4))
+            return cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGRA)
+        except ImportError:
+            raise ImportError("Please install either PIL or OpenCV from the addon preferences")
 
 MAX_CHR_LOD = 4
 MAX_CHR_ANI_PART = 2
@@ -728,6 +903,7 @@ class CN3PMesh(CN3BaseFileAccess):
         self.m_iMaxNumVertices: int
         self.m_iMaxNumIndices: int
         self.m_iMinNumVertices: int
+        self.m_iMinNumIndices: int
         self.m_iLODCtrlValueCount: int
         self.m_pVertices: list = []
         self.m_pIndices: list = []
@@ -985,7 +1161,6 @@ class CN3Chr(CN3TransformCollision):
 
 # ========== END TYPES ==========
 
-
 def read_some_data(context, filepath, use_some_setting):
     print("running read_some_data...")
     f = open(filepath, 'rb')
@@ -1204,7 +1379,7 @@ def read_some_data(context, filepath, use_some_setting):
         
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fp:
             size = texture.HeaderOrg.nWidth if texture.HeaderOrg.nWidth < texture.HeaderOrg.nHeight else texture.HeaderOrg.nHeight
-            py_image = Image.frombuffer('RGBA', (size, size), buffer, 'raw', 'RGBA', 0 ,1)
+            py_image = load_texture(buffer, size, size)
             py_image.save(fp)
             image_data = bpy.data.images.load(fp.name)
         
@@ -1296,7 +1471,7 @@ def read_some_data(context, filepath, use_some_setting):
         
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as fp:
             size = texture.HeaderOrg.nWidth if texture.HeaderOrg.nWidth < texture.HeaderOrg.nHeight else texture.HeaderOrg.nHeight
-            py_image = Image.frombuffer('RGBA', (size, size), buffer, 'raw', 'RGBA', 0 ,1)
+            py_image = load_texture(buffer, size, size)
             py_image.save(fp)
             image_data = bpy.data.images.load(fp.name)
         
@@ -1337,60 +1512,59 @@ def read_some_data(context, filepath, use_some_setting):
     return {'FINISHED'}
 
 
-class ImportSomeData(Operator, ImportHelper):
-    """This appears in the tooltip of the operator and in the generated docs"""
-    bl_idname = "import_test.some_data"  # important since its how bpy.ops.import_test.some_data is constructed
-    bl_label = "Import Some Data"
+class ImportKnightOnlineCharacter(Operator, ImportHelper):
+    """Import a Knight Online Character file"""
+    bl_idname = "import_scene.knightonline_chr"  # Changed from import_test.some_data
+    bl_label = "Import Knight Online Character"   # More descriptive label
 
-    # ImportHelper mixin class uses this
     filename_ext = ".n3chr"
 
     filter_glob: StringProperty(
         default="*.n3chr",
         options={'HIDDEN'},
-        maxlen=255,  # Max internal buffer length, longer would be clamped.
+        maxlen=255,
     )
 
-    # List of operator properties, the attributes will be assigned
-    # to the class instance from the operator settings before calling.
-    use_setting: BoolProperty(
-        name="Example Boolean",
-        description="Example Tooltip",
-        default=True,
-    )
-
-    type: EnumProperty(
-        name="Example Enum",
-        description="Choose between two items",
-        items=(
-            ('OPT_A', "First Option", "Description one"),
-            ('OPT_B', "Second Option", "Description two"),
-        ),
-        default='OPT_A',
-    )
-
+    # Remove unused properties
     def execute(self, context):
-        return read_some_data(context, self.filepath, self.use_setting)
+        if not check_dependencies():
+            self.report({'ERROR'}, "Please install either PIL or OpenCV from the addon preferences")
+            return {'CANCELLED'}
+        return read_some_data(context, self.filepath, True)
 
 
 # Only needed if you want to add into a dynamic menu.
 def menu_func_import(self, context):
-    self.layout.operator(ImportSomeData.bl_idname, text="Text Import Operator")
+    self.layout.operator(ImportKnightOnlineCharacter.bl_idname, 
+                        text="Knight Online Character (.n3chr)")
 
 
 # Register and add to the "file selector" menu (required to use F3 search "Text Import Operator" for quick access).
 def register():
-    bpy.utils.register_class(ImportSomeData)
+    # Add packages directory to Python path
+    addon_dir = os.path.dirname(os.path.realpath(__file__))
+    packages_dir = os.path.join(addon_dir, "packages")
+    if packages_dir not in sys.path:
+        sys.path.append(packages_dir)
+
+    # Register classes
+    bpy.utils.register_class(KnightOnlinePreferences)
+    bpy.utils.register_class(InstallDependenciesOperator)
+    bpy.utils.register_class(ImportKnightOnlineCharacter)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
 
-
 def unregister():
-    bpy.utils.unregister_class(ImportSomeData)
+    # Unregister classes
+    bpy.utils.unregister_class(KnightOnlinePreferences)
+    bpy.utils.unregister_class(InstallDependenciesOperator)
+    bpy.utils.unregister_class(ImportKnightOnlineCharacter)
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
 
+    # Remove packages directory from Python path
+    addon_dir = os.path.dirname(os.path.realpath(__file__))
+    packages_dir = os.path.join(addon_dir, "packages")
+    if packages_dir in sys.path:
+        sys.path.remove(packages_dir)
 
 if __name__ == "__main__":
     register()
-
-    # test call
-    bpy.ops.import_test.some_data('INVOKE_DEFAULT')
