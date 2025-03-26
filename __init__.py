@@ -236,55 +236,9 @@ def load_texture(buffer, width, height):
 MAX_CHR_LOD = 4
 MAX_CHR_ANI_PART = 2
 
-# Transforms for going from KO (right-handed) to Blender (left-handed) coordinates
-# KO: +X right, +Y up, +Z forward
-# Blender: +X right, +Y forward, +Z up
-map_mtx = mathutils.Matrix((
-    (1, 0, 0, 0),    # X stays same
-    (0, 0, 1, 0),    # Y becomes Z 
-    (0, 1, 0, 0),    # Z becomes Y
-    (0, 0, 0, 1)
-))
-
-# Add rotation correction matrix
-rot_mtx = mathutils.Matrix.Rotation(math.radians(-90), 4, 'X')
-map_mtx = rot_mtx @ map_mtx
-
-def transform_vertex(vertex):
-    """Transform vertex from KO to Blender coordinate system"""
-    # Create 4x1 vector for transformation
-    v = mathutils.Vector((vertex.x, vertex.y, vertex.z, 1.0))
-    
-    # Apply coordinate transform
-    v = map_mtx @ v
-    
-    # Update vertex coordinates
-    vertex.x = v.x
-    vertex.y = v.y 
-    vertex.z = v.z
-    
-    return vertex
-
-def transform_bone(bone_mtx):
-    """Transform bone matrix from KO to Blender coordinate system"""
-    # Convert to mathutils matrix
-    mtx = mathutils.Matrix((
-        (bone_mtx._11, bone_mtx._12, bone_mtx._13, bone_mtx._14),
-        (bone_mtx._21, bone_mtx._22, bone_mtx._23, bone_mtx._24), 
-        (bone_mtx._31, bone_mtx._32, bone_mtx._33, bone_mtx._34),
-        (bone_mtx._41, bone_mtx._42, bone_mtx._43, bone_mtx._44)
-    ))
-    
-    # Apply coordinate transform
-    mtx = map_mtx @ mtx @ map_mtx.inverted()
-    
-    # Update bone matrix
-    bone_mtx._11, bone_mtx._12, bone_mtx._13, bone_mtx._14 = mtx[0]
-    bone_mtx._21, bone_mtx._22, bone_mtx._23, bone_mtx._24 = mtx[1]
-    bone_mtx._31, bone_mtx._32, bone_mtx._33, bone_mtx._34 = mtx[2]
-    bone_mtx._41, bone_mtx._42, bone_mtx._43, bone_mtx._44 = mtx[3]
-    
-    return bone_mtx
+# Transforms for going from right-handed to left-handed coordinates
+map_mtx = mathutils.Matrix(((1, 0, 0, 0), (0, 0, -1, 0), (0, 1, 0, 0), (0, 0, 0, 1)))
+map_mtx = map_mtx @ mathutils.Matrix(((-1, 0, 0, 0), (0, 1, 0, 0), (0, 0, 1, 0), (0, 0, 0, 1)))
 
 # =================================
 
@@ -1272,31 +1226,41 @@ def read_some_data(context, filepath, use_some_setting):
     all_joints_by_idx = []
     
     def add_test_bone(resting_mtx, all_joints_by_idx, depth, joint, parent_bone, parent_mtx):
-        # Create bone
-        bone = armature.edit_bones.new(joint.m_szName)
-        all_joints_by_idx.append(bone)
+                
+        m_vPos = mathutils.Vector([joint.m_vPos.x, joint.m_vPos.y, joint.m_vPos.z])
+        m_qRot = mathutils.Quaternion([joint.m_qRot.w, joint.m_qRot.x, joint.m_qRot.y, joint.m_qRot.z])
+        m_vScale = mathutils.Vector([joint.m_vScale.x, joint.m_vScale.y, joint.m_vScale.z])
         
-        # Transform joint position
-        pos = transform_vertex(Vector(x=joint.m_vPos.x, y=joint.m_vPos.y, z=joint.m_vPos.z))
+        m_vPos = joint.m_KeyPos.get_data(0.0, m_vPos)
+        m_qRot = joint.m_KeyRot.get_data(0.0, m_qRot)
+        m_vScale = joint.m_KeyScale.get_data(0.0, m_vScale)
         
-        if parent_bone:
-            bone.parent = parent_bone
-            bone.head = parent_bone.tail
-        else:
-            bone.head = (0, 0, 0)
+        mtx = mathutils.Matrix.LocRotScale(m_vPos, m_qRot, m_vScale)
+        if parent_mtx:
+            mtx = parent_mtx @ mtx
         
-        # Set bone tail based on transformed position
-        bone.tail = (pos.x, pos.y, pos.z)
+        depth += 1
+        bone = armature.edit_bones.new(f"{depth}-{joint.m_szName}")
+
+        bone.head = (map_mtx @ mtx).to_translation()
+        bone.tail = bone.head + mathutils.Vector([0.0, -0.15, 0.0])
         
-        # Store resting matrix after coordinate transform
-        mtx = Matrix44()
-        # Fill matrix based on joint transform...
-        mtx = transform_bone(mtx)
-        resting_mtx[joint.m_szName] = mtx
+        bone.parent = parent_bone
+        bone.use_connect = True
         
-        # Process child joints
+        resting_mtx[deepcopy(bone.name)] = [deepcopy(bone.tail), deepcopy(bone.head), deepcopy(mtx), deepcopy((bone.tail - bone.head) / 2.0 + bone.head), deepcopy(bone.matrix)]
+        all_joints_by_idx.append(deepcopy(bone.name))
+        
+        tail_pos = mathutils.Vector([0.0, 0.0, 0.0])
+        
         for child in joint.m_Children:
-            add_test_bone(resting_mtx, all_joints_by_idx, depth + 1, child, bone, mtx)
+            depth, mtx_child = add_test_bone(resting_mtx, all_joints_by_idx, depth, child, bone, mtx)
+            tail_pos += (map_mtx @ mtx_child).to_translation()
+        
+        if len(joint.m_Children):
+            bone.tail = tail_pos / len(joint.m_Children)
+        
+        return depth, mtx
 
     add_test_bone(resting_mtx, all_joints_by_idx, depth, root_joint, None, None)
     
