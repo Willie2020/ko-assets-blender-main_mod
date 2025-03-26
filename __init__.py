@@ -29,19 +29,26 @@ class KnightOnlinePreferences(AddonPreferences):
         
         # Check if dependencies are installed correctly
         try:
-            # Try importing from packages directory first
+            # First try importing from packages directory
             addon_dir = os.path.dirname(os.path.realpath(__file__))
             packages_dir = os.path.join(addon_dir, "packages")
             if packages_dir not in sys.path:
                 sys.path.append(packages_dir)
             
-            from PIL import Image  # Try direct import first
+            # Try importing PIL from packages first
+            from packages import PIL
+            from packages.PIL import Image
             pil_installed = True
         except ImportError:
-            pil_installed = False
+            try:
+                # Try system-wide PIL as fallback
+                from PIL import Image
+                pil_installed = True
+            except ImportError:
+                pil_installed = False
             
         try:
-            import cv2  # Try direct import first
+            import cv2
             opencv_installed = True
         except ImportError:
             opencv_installed = False
@@ -175,10 +182,25 @@ from math import radians
 
 # Remove the immediate dependency check and make it conditional
 def check_dependencies():
+    """Check if required dependencies are available"""
     try:
-        from PIL import Image
-        USE_PIL = True
-    except ImportError:
+        # Try packages directory first
+        addon_dir = os.path.dirname(os.path.realpath(__file__))
+        packages_dir = os.path.join(addon_dir, "packages")
+        if packages_dir not in sys.path:
+            sys.path.append(packages_dir)
+            
+        try:
+            from packages import PIL
+            from packages.PIL import Image
+            USE_PIL = True
+        except ImportError:
+            try:
+                from PIL import Image
+                USE_PIL = True
+            except ImportError:
+                USE_PIL = False
+    except:
         USE_PIL = False
     
     try:
@@ -191,17 +213,25 @@ def check_dependencies():
 
 def load_texture(buffer, width, height):
     try:
+        # Try packages directory first
+        from packages import PIL
         from packages.PIL import Image
         return Image.frombuffer('RGBA', (width, height), buffer, 'raw', 'RGBA', 0, 1)
     except ImportError:
         try:
-            from packages import cv2
-            import numpy as np
-            img_array = np.frombuffer(buffer, dtype=np.uint8)
-            img_array = img_array.reshape((height, width, 4))
-            return cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGRA)
+            # Try system PIL as fallback
+            from PIL import Image
+            return Image.frombuffer('RGBA', (width, height), buffer, 'raw', 'RGBA', 0, 1)
         except ImportError:
-            raise ImportError("Please install either PIL or OpenCV from the addon preferences")
+            try:
+                # Try OpenCV as last resort
+                import cv2
+                import numpy as np
+                img_array = np.frombuffer(buffer, dtype=np.uint8)
+                img_array = img_array.reshape((height, width, 4))
+                return cv2.cvtColor(img_array, cv2.COLOR_RGBA2BGRA)
+            except ImportError:
+                raise ImportError("Please install either PIL or OpenCV from the addon preferences")
 
 MAX_CHR_LOD = 4
 MAX_CHR_ANI_PART = 2
